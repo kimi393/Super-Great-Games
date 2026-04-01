@@ -44,7 +44,7 @@ def restore_terminal(old_settings):
 
 def main():
     # Audio parameters
-    CHUNK = 2048  # Optimized buffer size
+    CHUNK = 256  # Smaller buffer for LOW LATENCY
     FORMAT = pyaudio.paFloat32  # Audio format
     CHANNELS = 1  # Mono (1 channel)
     RATE = 44100  # Sample rate in Hz
@@ -391,119 +391,53 @@ def main():
         # Simple display loop
         try:
             mode_name = ["", "Passthrough", "Recording", "Playback"][mode]
-            last_display_time = [time.time()]
-            # Store display values that update less frequently
-            display_values = {
-                'loudness': 0,
-                'mean_loudness': 0,
-                'max_loudness': 0,
-                'min_loudness': 0,
-                'level': 'Quiet',
-                'color': (0, 255, 0),
-                'bar': ''
-            }
             
             while is_running[0]:
                 # Read camera frame
                 ret, frame = cap.read()
                 
                 if ret:
-                    # Only update values every 0.5 seconds to reduce CPU usage
-                    current_time = time.time()
-                    if current_time - last_display_time[0] > 0.5:
-                        last_display_time[0] = current_time
-                        
-                        # Calculate new values
-                        loudness = current_loudness[0]
-                        bar_length = int(loudness / 5)  # 0-20 characters
-                        bar = '*' * bar_length + ' ' * (20 - bar_length)
-                        
-                        # Calculate statistics
-                        if loudness_history:
-                            mean_loudness = np.mean(list(loudness_history))
-                            max_loudness = np.max(list(loudness_history))
-                            min_loudness = np.min(list(loudness_history))
-                        else:
-                            mean_loudness = max_loudness = min_loudness = 0
-                        
-                        # Determine level and color based on loudness
-                        if loudness < 30:
-                            level = "Quiet"
-                            color = (0, 255, 0)  # Green
-                        elif loudness < 60:
-                            level = "Normal"
-                            color = (0, 255, 255)  # Yellow
-                        elif loudness < 80:
-                            level = "Loud"
-                            color = (0, 165, 255)  # Orange
-                        else:
-                            level = "VERY LOUD!"
-                            color = (0, 0, 255)  # Red
-                        
-                        # Update display values
-                        display_values['loudness'] = loudness
-                        display_values['mean_loudness'] = mean_loudness
-                        display_values['max_loudness'] = max_loudness
-                        display_values['min_loudness'] = min_loudness
-                        display_values['level'] = level
-                        display_values['color'] = color
-                        display_values['bar'] = bar
+                    # Calculate values EVERY FRAME (NO 0.5s DELAY!)
+                    loudness = current_loudness[0]
+                    bar_length = int(loudness / 5)  # 0-20 characters
+                    bar = '*' * bar_length + ' ' * (20 - bar_length)
                     
-                    # Always draw text with current values (no flashing)
-                    color = display_values['color']
+                    # Calculate statistics
+                    if loudness_history:
+                        mean_loudness = np.mean(list(loudness_history))
+                        max_loudness = np.max(list(loudness_history))
+                        min_loudness = np.min(list(loudness_history))
+                    else:
+                        mean_loudness = max_loudness = min_loudness = 0
+                    
+                    # Determine level and color based on loudness
+                    if loudness < 30:
+                        level = "Quiet"
+                        color = (0, 255, 0)  # Green
+                    elif loudness < 60:
+                        level = "Normal"
+                        color = (0, 255, 255)  # Yellow
+                    elif loudness < 80:
+                        level = "Loud"
+                        color = (0, 165, 255)  # Orange
+                    else:
+                        level = "VERY LOUD!"
+                        color = (0, 0, 255)  # Red
+                    
+                    # Draw text EVERY frame
                     cv2.putText(frame, f"Mode: {mode_name}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-                    cv2.putText(frame, f"Level: {display_values['level']}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-                    cv2.putText(frame, f"Current: {display_values['loudness']:.1f} dB", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-                    cv2.putText(frame, f"Mean: {display_values['mean_loudness']:.1f} dB | Max: {display_values['max_loudness']:.1f} dB | Min: {display_values['min_loudness']:.1f} dB", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 1)
-                    cv2.putText(frame, f"[{display_values['bar']}]", (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-                    # Show CURRENT volume_gain_db value (updates immediately without waiting for 0.5s)
-                    cv2.putText(frame, f"Volume: {volume_gain_db[0]:+.1f} dB | Press UP/DOWN to adjust, 'q' to go back", (10, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 1)
+                    cv2.putText(frame, f"Level: {level}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                    cv2.putText(frame, f"Current: {loudness:.1f} dB", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                    cv2.putText(frame, f"Mean: {mean_loudness:.1f} dB | Max: {max_loudness:.1f} dB | Min: {min_loudness:.1f} dB", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 1)
+                    cv2.putText(frame, f"[{bar}]", (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                    cv2.putText(frame, f"Volume: {volume_gain_db[0]:+.1f} dB | W/S to adjust, Q to exit", (10, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 1)
                     
                     # Display frame
                     cv2.imshow('Camera Feed with Audio Monitor', frame)
                 
-                # Check terminal for input - try using fcntl to make stdin non-blocking
-                arrow_pressed = False
-                try:
-                    import fcntl
-                    import os as os_module
-                    
-                    # Make stdin non-blocking
-                    flags = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
-                    fcntl.fcntl(sys.stdin, fcntl.F_SETFL, flags | os_module.O_NONBLOCK)
-                    
-                    try:
-                        ch = sys.stdin.read(1)
-                        if ch:
-                            if ch == 'q' or ch == 'Q':
-                                print("\nReturning to menu...")
-                                is_running[0] = False
-                                cv2.destroyWindow('Camera Feed with Audio Monitor')
-                                break
-                            elif ch == '\x1b':  # Escape sequence (arrow key)
-                                try:
-                                    next1 = sys.stdin.read(1)
-                                    next2 = sys.stdin.read(1)
-                                    if next1 == '[':
-                                        if next2 == 'A':  # Up arrow
-                                            volume_gain_db[0] = min(24.0, volume_gain_db[0] + 0.5)
-                                            arrow_pressed = True
-                                        elif next2 == 'B':  # Down arrow
-                                            volume_gain_db[0] = max(-24.0, volume_gain_db[0] - 0.5)
-                                            arrow_pressed = True
-                                except:
-                                    pass
-                    except (IOError, OSError):
-                        pass  # No data available
-                    finally:
-                        # Reset to blocking
-                        fcntl.fcntl(sys.stdin, fcntl.F_SETFL, flags)
-                except Exception:
-                    pass
-                
-                # Non-blocking keyboard check using cv2
+                # Fast keyboard input via cv2
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
+                if key == ord('q') or key == ord('Q'):
                     print("\nReturning to menu...")
                     is_running[0] = False
                     cv2.destroyWindow('Camera Feed with Audio Monitor')
@@ -517,7 +451,6 @@ def main():
                 if not audio_thread.is_alive():
                     print("\nAudio operation completed.")
                     is_running[0] = False
-                    time.sleep(0.2)
                     break
                 
         except KeyboardInterrupt:
