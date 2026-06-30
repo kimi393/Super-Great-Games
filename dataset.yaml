@@ -1,0 +1,12 @@
+path: "/Users/kimi/Desktop/j/ ai hand whiteing boaro/yolo_dataset"
+train: images/train
+val: images/val
+
+names:
+  0: toy-cars
+  1: daihatsu
+  2: lamborghini
+  3: mini cooper
+  4: prius
+  5: sienta
+  6: tesla
