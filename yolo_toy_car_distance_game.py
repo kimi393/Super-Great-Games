@@ -72,6 +72,11 @@ STATE_SELECTING = 0
 STATE_PLAYING = 1
 STATE_RESULT = 2
 STATE_REPLAY = 3
+STATE_GAME_OVER = 4
+
+# Motion Detection Constants
+MOTION_THRESHOLD = 1200       # Pixels of change to start tracking a shot
+NO_MOTION_FRAMES_REQ = 60    # Consecutive frames with no motion before round ends (1.5s at 30fps)
 
 # Available classes in our custom yolo11_toy_cars.pt model
 AVAILABLE_CARS = ["daihatsu", "lamborghini", "mini cooper", "prius", "sienta", "tesla"]
@@ -218,7 +223,7 @@ def draw_target_squares(img, tx, ty):
     cv2.putText(img, "TARGET ZONE (SQUARES)", (tx - 65, ty - 128),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_NEON_CYAN, 1, cv2.LINE_AA)
 
-def draw_status_bar(img, state, p1_chosen, p2_chosen, winner_str=""):
+def draw_status_bar(img, state, p1_chosen, p2_chosen, winner_str="", round_counter=1, active_player=1):
     """Draws a game-status bar at the top of the screen."""
     h, w, _ = img.shape
     bar_h = 45
@@ -233,15 +238,18 @@ def draw_status_bar(img, state, p1_chosen, p2_chosen, winner_str=""):
         state_desc = "STAGE: CAR SELECTION (CHOOSE 3 CARS EACH)"
         color = COLOR_NEON_CYAN
     elif state == STATE_PLAYING:
-        state_desc = "STAGE: PLAYING (ROLL CARS AND PRESS SPACE TO LOCK IN)"
-        color = COLOR_NEON_MAGENTA
+        state_desc = f"ROUND {round_counter}/10: PLAYER {active_player}'S TURN"
+        color = COLOR_NEON_CYAN if active_player == 1 else COLOR_NEON_MAGENTA
     elif state == STATE_RESULT:
-        state_desc = f"ROUND COMPLETE: {winner_str.upper()}"
+        state_desc = f"ROUND {round_counter} COMPLETE: {winner_str.upper()}"
+        color = COLOR_NEON_GREEN
+    elif state == STATE_GAME_OVER:
+        state_desc = f"GAME OVER // MATCH WINNER: {winner_str.upper()}"
         color = COLOR_NEON_GREEN
         
-    cv2.putText(img, state_desc, (w - 480, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    cv2.putText(img, state_desc, (w - 520, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
-def draw_player_sideboards(img, p1_cars, p2_cars, p1_car_points, p2_car_points, p1_round_points, p2_round_points, p1_score, p2_score, state, p1_coins_collected=0, p2_coins_collected=0):
+def draw_player_sideboards(img, p1_cars, p2_cars, p1_car_points, p2_car_points, p1_round_points, p2_round_points, p1_score, p2_score, state, p1_coins_collected=0, p2_coins_collected=0, active_player=1):
     """Draws player status boards on the left and right sides of the screen."""
     h, w, _ = img.shape
     panel_w = 230
@@ -251,17 +259,35 @@ def draw_player_sideboards(img, p1_cars, p2_cars, p1_car_points, p2_car_points, 
     p1_max_pts = max(p1_car_points.values()) if p1_car_points else 0
     p2_max_pts = max(p2_car_points.values()) if p2_car_points else 0
     
+    # Pulsing thickness for the active player's border
+    p1_border = COLOR_NEON_CYAN
+    p2_border = COLOR_NEON_MAGENTA
+    p1_thickness = 1
+    p2_thickness = 1
+    
+    if state == STATE_PLAYING:
+        pulse = 2 + int(math.sin(time.time() * 10) * 1.5 + 1.5)
+        if active_player == 1:
+            p1_thickness = pulse
+        else:
+            p2_thickness = pulse
+
     # Player 1 Panel (Left)
     p1_x1, p1_y1 = 15, 60
     p1_x2, p1_y2 = p1_x1 + panel_w, p1_y1 + panel_h
-    draw_glass_panel(img, (p1_x1, p1_y1), (p1_x2, p1_y2), alpha=0.6, border_color=COLOR_NEON_CYAN)
+    draw_glass_panel(img, (p1_x1, p1_y1), (p1_x2, p1_y2), alpha=0.6, border_color=p1_border)
+    if p1_thickness > 1:
+        cv2.rectangle(img, (p1_x1, p1_y1), (p1_x2, p1_y2), p1_border, p1_thickness)
     
-    cv2.putText(img, "PLAYER 1 STATUS", (p1_x1 + 15, p1_y1 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_NEON_CYAN, 1, cv2.LINE_AA)
-    cv2.line(img, (p1_x1 + 15, y1_p1 := p1_y1 + 32), (p1_x2 - 15, y1_p1), COLOR_NEON_CYAN, 1)
+    cv2.putText(img, "PLAYER 1 STATUS", (p1_x1 + 15, p1_y1 + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_NEON_CYAN, 1, cv2.LINE_AA)
+    cv2.line(img, (p1_x1 + 15, y1_p1 := p1_y1 + 28), (p1_x2 - 15, y1_p1), COLOR_NEON_CYAN, 1)
     
-    cv2.putText(img, f"SCORE: {p1_score}", (p1_x1 + 15, p1_y1 + 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_NEON_GREEN, 1, cv2.LINE_AA)
+    p1_car_sum = sum(p1_car_points.values())
+    p1_total = max(0, p1_score + p1_car_sum)
+    cv2.putText(img, f"TOTAL SCORE: {p1_total}", (p1_x1 + 15, y1_p1 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_NEON_GREEN, 1, cv2.LINE_AA)
+    cv2.putText(img, f"(COINS: {p1_score} | CARS: {p1_car_sum})", (p1_x1 + 15, y1_p1 + 32), cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
     
-    y_offset = p1_y1 + 70
+    y_offset = p1_y1 + 82
     cv2.putText(img, "CHOSEN VEHICLES:", (p1_x1 + 15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
     for car in p1_cars:
         y_offset += 20
@@ -275,20 +301,25 @@ def draw_player_sideboards(img, p1_cars, p2_cars, p1_car_points, p2_car_points, 
     y_offset = p1_y2 - 50
     cv2.line(img, (p1_x1 + 15, y_offset - 10), (p1_x2 - 15, y_offset - 10), (50, 50, 50), 1)
     
-    cv2.putText(img, "ROUND POINTS:", (p1_x1 + 15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
+    cv2.putText(img, "TURN POINTS:", (p1_x1 + 15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
     cv2.putText(img, f"{p1_round_points} PTS", (p1_x1 + 15, y_offset + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLOR_NEON_GREEN if p1_round_points > 0 else COLOR_TEXT_MUTED, 2, cv2.LINE_AA)
     
     # Player 2 Panel (Right)
     p2_x1, p2_y1 = w - panel_w - 15, 60
     p2_x2, p2_y2 = w - 15, p2_y1 + panel_h
-    draw_glass_panel(img, (p2_x1, p2_y1), (p2_x2, p2_y2), alpha=0.6, border_color=COLOR_NEON_MAGENTA)
+    draw_glass_panel(img, (p2_x1, p2_y1), (p2_x2, p2_y2), alpha=0.6, border_color=p2_border)
+    if p2_thickness > 1:
+        cv2.rectangle(img, (p2_x1, p2_y1), (p2_x2, p2_y2), p2_border, p2_thickness)
     
-    cv2.putText(img, "PLAYER 2 STATUS", (p2_x1 + 15, p2_y1 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_NEON_MAGENTA, 1, cv2.LINE_AA)
-    cv2.line(img, (p2_x1 + 15, y1_p2 := p2_y1 + 32), (p2_x2 - 15, y1_p2), COLOR_NEON_MAGENTA, 1)
+    cv2.putText(img, "PLAYER 2 STATUS", (p2_x1 + 15, p2_y1 + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_NEON_MAGENTA, 1, cv2.LINE_AA)
+    cv2.line(img, (p2_x1 + 15, y1_p2 := p2_y1 + 28), (p2_x2 - 15, y1_p2), COLOR_NEON_MAGENTA, 1)
     
-    cv2.putText(img, f"SCORE: {p2_score}", (p2_x1 + 15, p2_y1 + 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_NEON_GREEN, 1, cv2.LINE_AA)
+    p2_car_sum = sum(p2_car_points.values())
+    p2_total = max(0, p2_score + p2_car_sum)
+    cv2.putText(img, f"TOTAL SCORE: {p2_total}", (p2_x1 + 15, y1_p2 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_NEON_GREEN, 1, cv2.LINE_AA)
+    cv2.putText(img, f"(COINS: {p2_score} | CARS: {p2_car_sum})", (p2_x1 + 15, y1_p2 + 32), cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
     
-    y_offset = p2_y1 + 70
+    y_offset = p2_y1 + 82
     cv2.putText(img, "CHOSEN VEHICLES:", (p2_x1 + 15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
     for car in p2_cars:
         y_offset += 20
@@ -302,8 +333,62 @@ def draw_player_sideboards(img, p1_cars, p2_cars, p1_car_points, p2_car_points, 
     y_offset = p2_y2 - 50
     cv2.line(img, (p2_x1 + 15, y_offset - 10), (p2_x2 - 15, y_offset - 10), (50, 50, 50), 1)
     
-    cv2.putText(img, "ROUND POINTS:", (p2_x1 + 15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
+    cv2.putText(img, "TURN POINTS:", (p2_x1 + 15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
     cv2.putText(img, f"{p2_round_points} PTS", (p2_x1 + 15, y_offset + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLOR_NEON_GREEN if p2_round_points > 0 else COLOR_TEXT_MUTED, 2, cv2.LINE_AA)
+
+def draw_score_graph(img, x, y, width, height, p1_history, p2_history):
+    """Draws a beautiful high-tech line chart showing score progression for P1 and P2."""
+    # Draw background panel for graph
+    draw_glass_panel(img, (x, y), (x + width, y + height), alpha=0.3, border_color=(80, 80, 80))
+    
+    num_points = len(p1_history)
+    if num_points < 2:
+        return
+        
+    # Calculate Y scale rounded up to the nearest multiple of 6
+    actual_max = max(max(p1_history), max(p2_history), 1)
+    max_val = ((actual_max + 5) // 6) * 6
+    
+    # Draw horizontal grid lines
+    for i in range(4):
+        gy = y + height - int(i * (height - 25) / 3) - 13
+        cv2.line(img, (x + 15, gy), (x + width - 15, gy), (40, 40, 40), 1)
+        val = int(i * max_val / 3)
+        cv2.putText(img, str(val), (x + 17, gy - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (120, 120, 120), 1, cv2.LINE_AA)
+        
+    # Plot points
+    pts_p1 = []
+    pts_p2 = []
+    for idx in range(num_points):
+        px = x + 15 + int(idx * (width - 30) / (num_points - 1))
+        
+        # P1
+        py1 = y + height - int(p1_history[idx] * (height - 25) / max_val) - 13
+        pts_p1.append((px, py1))
+        
+        # P2
+        py2 = y + height - int(p2_history[idx] * (height - 25) / max_val) - 13
+        pts_p2.append((px, py2))
+        
+    # Draw lines
+    for idx in range(num_points - 1):
+        cv2.line(img, pts_p1[idx], pts_p1[idx+1], COLOR_NEON_CYAN, 2, cv2.LINE_AA)
+        cv2.line(img, pts_p2[idx], pts_p2[idx+1], COLOR_NEON_MAGENTA, 2, cv2.LINE_AA)
+        
+    # Draw nodes and labels
+    for idx in range(num_points):
+        px = pts_p1[idx][0]
+        # X axis tick labels (e.g. 0 to 10)
+        cv2.line(img, (px, y + height - 13), (px, y + height - 8), (80, 80, 80), 1)
+        if idx % 2 == 0 or idx == num_points - 1:
+            cv2.putText(img, f"R{idx}", (px - 10, y + height - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (120, 120, 120), 1, cv2.LINE_AA)
+            
+        cv2.circle(img, pts_p1[idx], 3, COLOR_NEON_CYAN, -1, cv2.LINE_AA)
+        cv2.circle(img, pts_p2[idx], 3, COLOR_NEON_MAGENTA, -1, cv2.LINE_AA)
+        
+    # Title overlay
+    cv2.putText(img, "SCORE HISTORY CHART (CYAN: P1 | MAGENTA: P2)", (x + 15, y + 15),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
 
 
 
@@ -399,6 +484,53 @@ def generate_safe_coin_spots(w, h, tx, ty, num_coins=5):
             too_close = False
             for sx, sy in spots:
                 if math.sqrt((sx - cx)**2 + (sy - cy)**2) < 60:
+                    too_close = True
+                    break
+            if not too_close:
+                spots.append((cx, cy))
+    return spots
+
+def generate_safe_bomb_spots(w, h, tx, ty, coins, num_bombs=3):
+    """Generates random bomb coordinates near the target but keeping distance from safe zones and existing coins."""
+    x1_p1, x2_p1 = int(w * 0.15), int(w * 0.25)
+    y1_p1, y2_p1 = int(h * 0.28), int(h * 0.42)
+    
+    x1_p2, x2_p2 = int(w * 0.69), int(w * 0.79)
+    y1_p2, y2_p2 = int(h * 0.28), int(h * 0.42)
+    
+    spots = []
+    attempts = 0
+    while len(spots) < num_bombs and attempts < 150:
+        attempts += 1
+        
+        # Spawn near target: distance between 80px and 220px
+        angle = random.uniform(0, 2 * math.pi)
+        r = random.uniform(80, 220)
+        cx = int(tx + r * math.cos(angle))
+        cy = int(ty + r * math.sin(angle))
+        
+        # Ensure within screen bounds
+        if not (50 <= cx <= w - 50 and 50 <= cy <= h - 50):
+            continue
+            
+        dx1 = max(0, x1_p1 - cx, cx - x2_p1)
+        dy1 = max(0, y1_p1 - cy, cy - y2_p1)
+        dist_p1 = math.sqrt(dx1**2 + dy1**2)
+        
+        dx2 = max(0, x1_p2 - cx, cx - x2_p2)
+        dy2 = max(0, y1_p2 - cy, cy - y2_p2)
+        dist_p2 = math.sqrt(dx2**2 + dy2**2)
+        
+        if dist_p1 >= 100 and dist_p2 >= 100:
+            too_close = False
+            # Don't spawn too close to existing bombs
+            for sx, sy in spots:
+                if math.sqrt((sx - cx)**2 + (sy - cy)**2) < 60:
+                    too_close = True
+                    break
+            # Don't spawn too close to coins
+            for coin in coins:
+                if math.sqrt((coin["x"] - cx)**2 + (coin["y"] - cy)**2) < 50:
                     too_close = True
                     break
             if not too_close:
@@ -537,6 +669,15 @@ def main():
     if coin_img_path.exists():
         coin_overlay = cv2.imread(str(coin_img_path), cv2.IMREAD_UNCHANGED)
         print("Loaded target_coin.png successfully.")
+        
+    # Load bomb image
+    bomb_img_path = Path("/Users/kimi/Desktop/j/ ai hand whiteing boaro/target_bomb.png")
+    bomb_overlay = None
+    if bomb_img_path.exists():
+        bomb_overlay = cv2.imread(str(bomb_img_path), cv2.IMREAD_UNCHANGED)
+        print("Loaded target_bomb.png successfully.")
+        
+    bombs = []
     
     tx, ty = 0, 0
     winner_str = ""
@@ -562,6 +703,25 @@ def main():
     
     # Animation variables
     particles = []
+    
+    # Round and Turn variables
+    round_counter = 1
+    active_player = 1       # 1 for Player 1, 2 for Player 2 (will be randomized when starting game)
+    turn_state = "WAITING"   # "WAITING", "MOTION", "STOPPED"
+    motion_frames_count = 0
+    turn_start_time = 0.0
+    prev_gray = None
+    car_prev_positions = {}
+    
+    # Real-time projected points
+    p1_projected_pts = 0
+    p2_projected_pts = 0
+    result_screen_start = 0.0
+    return_state = STATE_RESULT
+    game_over_frame_idx = 0
+    last_game_over_frame_time = 0.0
+    p1_score_history = [0]
+    p2_score_history = [0]
     frozen_frame = None
     
     global bg_music, is_saving_replay
@@ -630,7 +790,7 @@ def main():
             
             # Record selection frame for replay
             recorded_frames.append(display_frame.copy())
-            if len(recorded_frames) > 1800:
+            if len(recorded_frames) > 18000:
                 recorded_frames.pop(0)
                 
             cv2.imshow("YOLO Toy Car Game HUD", display_frame)
@@ -643,7 +803,27 @@ def main():
             display_frame = frame.copy()
             h, w, _ = display_frame.shape
             
-            
+            # --- Motion Detection ---
+            motion_mask = np.ones((h, w), dtype=np.uint8) * 255
+            # Mask out safe zones
+            x1_p1_sz, x2_p1_sz, y1_p1_sz, y2_p1_sz = get_p1_safe_zone(w, h)
+            motion_mask[y1_p1_sz:y2_p1_sz, x1_p1_sz:x2_p1_sz] = 0
+            x1_p2_sz, x2_p2_sz, y1_p2_sz, y2_p2_sz = get_p2_safe_zone(w, h)
+            motion_mask[y1_p2_sz:y2_p2_sz, x1_p2_sz:x2_p2_sz] = 0
+            # Mask out top HUD bar
+            motion_mask[0:50, :] = 0
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.GaussianBlur(gray, (21, 21), 0)
+
+            motion_level = 0
+            if prev_gray is not None:
+                frame_diff = cv2.absdiff(prev_gray, gray)
+                thresh = cv2.threshold(frame_diff, 25, 255, cv2.THRESH_BINARY)[1]
+                thresh = cv2.bitwise_and(thresh, motion_mask)
+                thresh = cv2.dilate(thresh, None, iterations=2)
+                motion_level = np.sum(thresh == 255)
+            prev_gray = gray
             # Predict objects using custom model
             results = model.track(source=frame, persist=True, verbose=False, tracker="bytetrack.yaml")
             
@@ -700,6 +880,26 @@ def main():
                                     for _ in range(15):
                                         particles.append(Particle(coin["x"], coin["y"], (0, 215, 255)))
                                         
+                        # Check collision with bombs
+                        for bomb in bombs:
+                            if not bomb["collected"]:
+                                bdist = math.sqrt((cx - bomb["x"])**2 + (cy - bomb["y"])**2)
+                                if bdist < 35:
+                                    bomb["collected"] = True
+                                    os.system("afplay /System/Library/Sounds/Basso.aiff &")
+                                    if belongs_to_p1:
+                                        p1_score = max(0, p1_score - 1)
+                                        if p1_coins_collected > 0:
+                                            p1_coins_collected -= 1
+                                    elif belongs_to_p2:
+                                        p2_score = max(0, p2_score - 1)
+                                        if p2_coins_collected > 0:
+                                            p2_coins_collected -= 1
+                                    # Spawn explosion particles (red and dark smoke)
+                                    for _ in range(15):
+                                        particles.append(Particle(bomb["x"], bomb["y"], (0, 0, 255)))
+                                        particles.append(Particle(bomb["x"], bomb["y"], (50, 50, 50)))
+                                        
                         # Update best scores and positions
                         if belongs_to_p1:
                             p1_car_points[cls_name] = max(p1_car_points.get(cls_name, 0), car_pts)
@@ -741,8 +941,92 @@ def main():
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, line_color, 1, cv2.LINE_AA)
             
             # Calculate sum of round points (including coin collection)
+            # Calculate sum of round points (including coin collection)
             p1_round_points = sum(p1_car_points.values()) + p1_coins_collected
             p2_round_points = sum(p2_car_points.values()) + p2_coins_collected
+
+            # --- Track tracked car velocities ---
+            any_car_moving = False
+            current_car_positions = {}
+            if results and results[0].boxes is not None:
+                boxes = results[0].boxes
+                if boxes.id is not None:
+                    track_ids = boxes.id.int().cpu().tolist()
+                    xyxys = boxes.xyxy.cpu().tolist()
+                    for xyxy, track_id in zip(xyxys, track_ids):
+                        x1, y1, x2, y2 = map(int, xyxy)
+                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                        current_car_positions[track_id] = (cx, cy)
+                        if track_id in car_prev_positions:
+                            px, py = car_prev_positions[track_id]
+                            dist = math.sqrt((cx - px)**2 + (cy - py)**2)
+                            if dist > 3.0: # threshold of 3 pixels
+                                any_car_moving = True
+            car_prev_positions = current_car_positions
+
+            # --- State Machine for Turn/Round End Detection ---
+            is_currently_moving = (motion_level > MOTION_THRESHOLD) or any_car_moving
+            
+            if turn_state == "WAITING":
+                if is_currently_moving:
+                    turn_state = "MOTION"
+                    turn_start_time = time.time()
+                    motion_frames_count = 0
+                    print("Shot detected! Tracking movement...")
+            
+            elif turn_state == "MOTION":
+                if not is_currently_moving:
+                    motion_frames_count += 1
+                else:
+                    motion_frames_count = 0
+                    
+                elapsed = time.time() - turn_start_time
+                if motion_frames_count >= NO_MOTION_FRAMES_REQ:
+                    turn_state = "STOPPED"
+                    print("Motion stopped. Turn complete!")
+                elif elapsed > 30.0:
+                    turn_state = "STOPPED"
+                    print("Turn timeout reached!")
+                    
+            if turn_state == "STOPPED":
+                frozen_frame = display_frame.copy()
+                
+                # Winner and score summary at the end of the shot
+                p1_car_sum = sum(p1_car_points.values())
+                p2_car_sum = sum(p2_car_points.values())
+                p1_total = max(0, p1_score + p1_car_sum)
+                p2_total = max(0, p2_score + p2_car_sum)
+                
+                # Append to score histories
+                p1_score_history.append(p1_total)
+                p2_score_history.append(p2_total)
+                
+                if active_player == 1:
+                    winner_str = f"P1 COMPLETED SHOT (SCORE P1: {p1_total} | P2: {p2_total})"
+                else:
+                    winner_str = f"P2 COMPLETED SHOT (SCORE P1: {p1_total} | P2: {p2_total})"
+                
+                winning_pos = (tx, ty)
+                winning_color = COLOR_NEON_CYAN if active_player == 1 else COLOR_NEON_MAGENTA
+                
+                # Spawn celebration particles
+                for _ in range(50):
+                    particles.append(Particle(tx, ty, winning_color))
+                
+                # Trigger replay saving ONLY at the end of the full set (Round 10)
+                if round_counter == 10:
+                    is_saving_replay = True
+                    replay_foldername = "/Users/kimi/Desktop/j/ ai hand whiteing boaro/toy_car_replays"
+                    frames_copy = list(recorded_frames)
+                    save_thread = threading.Thread(
+                        target=save_replay_video,
+                        args=(frames_copy, replay_foldername, 30.0),
+                        daemon=True
+                    )
+                    save_thread.start()
+                
+                result_screen_start = time.time()
+                game_state = STATE_RESULT
 
             # Draw coins
             for coin in coins:
@@ -753,6 +1037,15 @@ def main():
                         cv2.circle(display_frame, (coin["x"], coin["y"]), 12, (0, 215, 255), -1, cv2.LINE_AA)
                         cv2.circle(display_frame, (coin["x"], coin["y"]), 12, (0, 255, 255), 1, cv2.LINE_AA)
                         
+            # Draw bombs
+            for bomb in bombs:
+                if not bomb["collected"]:
+                    if bomb_overlay is not None:
+                        draw_transparent_png(display_frame, bomb_overlay, bomb["x"], bomb["y"], size=28)
+                    else:
+                        cv2.circle(display_frame, (bomb["x"], bomb["y"]), 12, (0, 0, 255), -1, cv2.LINE_AA)
+                        cv2.circle(display_frame, (bomb["x"], bomb["y"]), 12, (0, 0, 180), 1, cv2.LINE_AA)
+                        
             # Update and draw active sparks
             particles = [p for p in particles if p.is_alive()]
             for p in particles:
@@ -761,16 +1054,16 @@ def main():
                 
             # Draw target and sidebar HUDs
             draw_target_squares(display_frame, tx, ty)
-            draw_status_bar(display_frame, game_state, p1_cars, p2_cars)
-            draw_player_sideboards(display_frame, p1_cars, p2_cars, p1_car_points, p2_car_points, p1_round_points, p2_round_points, p1_score, p2_score, game_state, p1_coins_collected, p2_coins_collected)
+            draw_status_bar(display_frame, game_state, p1_cars, p2_cars, winner_str, round_counter, active_player)
+            draw_player_sideboards(display_frame, p1_cars, p2_cars, p1_car_points, p2_car_points, p1_round_points, p2_round_points, p1_score, p2_score, game_state, p1_coins_collected, p2_coins_collected, active_player)
             
             # Quick instructions on bottom
-            cv2.putText(display_frame, "PRESS [SPACE] TO LOCK IN & FIND WINNER // [S] TO CHANGE CARS", (w // 2 - 250, h - 25),
+            cv2.putText(display_frame, "ROLL A VEHICLE OR ATTACK ITEM // PRESS [SPACE] TO FORCE LOCK IN", (w // 2 - 270, h - 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT_WHITE, 1, cv2.LINE_AA)
             
             # Record current frame for replay
             recorded_frames.append(display_frame.copy())
-            if len(recorded_frames) > 1800:
+            if len(recorded_frames) > 18000:
                 recorded_frames.pop(0)
                 
             cv2.imshow("YOLO Toy Car Game HUD", display_frame)
@@ -788,8 +1081,8 @@ def main():
                 
             # Draw game state overlays
             draw_target_squares(display_frame, tx, ty)
-            draw_status_bar(display_frame, game_state, p1_cars, p2_cars, winner_str)
-            draw_player_sideboards(display_frame, p1_cars, p2_cars, p1_car_points, p2_car_points, p1_round_points, p2_round_points, p1_score, p2_score, game_state, p1_coins_collected, p2_coins_collected)
+            draw_status_bar(display_frame, game_state, p1_cars, p2_cars, winner_str, round_counter, active_player)
+            draw_player_sideboards(display_frame, p1_cars, p2_cars, p1_car_points, p2_car_points, p1_round_points, p2_round_points, p1_score, p2_score, game_state, p1_coins_collected, p2_coins_collected, active_player)
             
             # Winner celebration pop-up overlay card
             card_w, card_h = 440, 160
@@ -797,31 +1090,73 @@ def main():
             cx2, cy2 = cx1 + card_w, cy1 + card_h
             
             # Panel glows with winner color
+            winning_color = COLOR_NEON_CYAN if active_player == 1 else COLOR_NEON_MAGENTA
             draw_glass_panel(display_frame, (cx1, cy1), (cx2, cy2), alpha=0.85, border_color=winning_color)
             
             cv2.putText(display_frame, "MATCH RESULTS LOCK-IN", (cx1 + 25, cy1 + 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
             
             cv2.putText(display_frame, winner_str, (cx1 + 25, cy1 + 75),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, winning_color, 2, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, winning_color, 1, cv2.LINE_AA)
                         
             # Details description
-            details_str = f"P1: {p1_round_points} PTS   vs   P2: {p2_round_points} PTS"
+            p1_car_sum = sum(p1_car_points.values())
+            p2_car_sum = sum(p2_car_points.values())
+            p1_total = max(0, p1_score + p1_car_sum)
+            p2_total = max(0, p2_score + p2_car_sum)
+            details_str = f"P1: {p1_total} PTS   vs   P2: {p2_total} PTS"
             cv2.putText(display_frame, details_str, (cx1 + 25, cy1 + 100),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT_WHITE, 1, cv2.LINE_AA)
             
-            # Show replay saved/saving indicator
-            if is_saving_replay:
-                cv2.putText(display_frame, "SAVING REPLAY TO MP4...", (cx1 + 25, cy1 + 122),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 165, 255), 1, cv2.LINE_AA) # Orange/amber
+            # Show replay saved/saving indicator only for final round, otherwise show play instructions
+            if round_counter == 10:
+                if is_saving_replay:
+                    cv2.putText(display_frame, "SAVING FULL REPLAY TO MP4...", (cx1 + 25, cy1 + 122),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 165, 255), 1, cv2.LINE_AA)
+                else:
+                    cv2.putText(display_frame, "FULL REPLAY SAVED TO MP4", (cx1 + 25, cy1 + 122),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_NEON_GREEN, 1, cv2.LINE_AA)
             else:
-                cv2.putText(display_frame, "REPLAY SAVED TO 'last_replay.mp4'", (cx1 + 25, cy1 + 122),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_NEON_GREEN, 1, cv2.LINE_AA)
+                cv2.putText(display_frame, "PRESS [P] TO WATCH REPLAY OF SET", (cx1 + 25, cy1 + 122),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
                         
-            cv2.putText(display_frame, "PRESS [R] NEXT ROUND // [P] REPLAY // [S] RE-SELECT // [Q] QUIT", (cx1 + 10, cy2 - 15),
+            cv2.putText(display_frame, "PRESS [R] NEXT TURN // [P] REPLAY // [S] RESET // [Q] QUIT", (cx1 + 10, cy2 - 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
             
+            # Auto-advance check
+            elapsed_result = time.time() - result_screen_start
+            time_left = max(0, int(4.5 - elapsed_result))
+            if time_left > 0:
+                cv2.putText(display_frame, f"AUTO-ADVANCING IN {time_left}S...", (w - 200, h - 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
+            
             cv2.imshow("YOLO Toy Car Game HUD", display_frame)
+
+            if elapsed_result > 4.0:
+                # Trigger transition to next round or end game
+                particles.clear()
+                p1_coins_collected = 0
+                p2_coins_collected = 0
+                p1_round_points = 0
+                p2_round_points = 0
+                
+                if round_counter < 10:
+                    round_counter += 1
+                    active_player = 3 - active_player
+                    turn_state = "WAITING"
+                    turn_start_time = 0.0
+                    motion_frames_count = 0
+                    prev_gray = None
+                    game_state = STATE_PLAYING
+                    print(f"Round {round_counter} started! Player {active_player}'s turn.")
+                else:
+                    # Freeze the screen for game over
+                    frozen_frame = display_frame.copy()
+                    game_state = STATE_GAME_OVER
+                    game_over_frame_idx = 0
+                    last_game_over_frame_time = 0.0
+                    os.system("afplay ding_sound_effect.mp3 &")
+                    print("Game over! 10 rounds complete.")
         
         elif game_state == STATE_REPLAY:
             # Play back recorded frames
@@ -829,31 +1164,107 @@ def main():
                 replay_frame = r_frame.copy()
                 h, w, _ = replay_frame.shape
                 
-                # Draw blinking "REPLAY" watermark in top-center
                 dot_visible = (int(time.time() * 3) % 2 == 0)
                 dot_color = (0, 0, 255) if dot_visible else (50, 50, 50)
                 cv2.circle(replay_frame, (w // 2 - 60, 25), 6, dot_color, -1, cv2.LINE_AA)
                 cv2.putText(replay_frame, "REPLAY PLAYBACK", (w // 2 - 45, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2, cv2.LINE_AA)
                 
-                # Progress bar at the bottom
                 bar_y = h - 10
                 progress_w = int((frame_idx + 1) / len(recorded_frames) * w)
                 cv2.rectangle(replay_frame, (0, bar_y), (progress_w, h), COLOR_NEON_CYAN, -1)
                 
-                # Show instructions
                 cv2.putText(replay_frame, "PRESS [SPACE] OR [P] TO SKIP REPLAY", (20, h - 25),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
                 
                 cv2.imshow("YOLO Toy Car Game HUD", replay_frame)
                 
-                # Check for escape/skip key (30ms delay to match 33fps playback)
                 key = cv2.waitKey(30) & 0xFF
-                if key in [ord(' '), ord('p'), ord('q'), 27]: # space, P, Q, or ESC
+                if key in [ord(' '), ord('p'), ord('q'), 27]:
                     break
             
-            # Replay ended, return to result screen
-            game_state = STATE_RESULT
+            result_screen_start = time.time()
+            game_state = return_state
+            
+        elif game_state == STATE_GAME_OVER:
+            # Play the full replay looping in the background of the final HUD
+            if recorded_frames:
+                if time.time() - last_game_over_frame_time > 0.033: # 30 FPS playback
+                    game_over_frame_idx = (game_over_frame_idx + 1) % len(recorded_frames)
+                    last_game_over_frame_time = time.time()
+                display_frame = recorded_frames[game_over_frame_idx].copy()
+            else:
+                display_frame = frozen_frame.copy() if frozen_frame is not None else np.zeros((h, w, 3), dtype=np.uint8)
+                
+            dim_overlay = display_frame.copy()
+            cv2.rectangle(dim_overlay, (0, 0), (w, h), (10, 10, 10), -1)
+            cv2.addWeighted(dim_overlay, 0.7, display_frame, 0.3, 0, display_frame)
+            
+            # Winner calculation
+            p1_car_sum = sum(p1_car_points.values())
+            p2_car_sum = sum(p2_car_points.values())
+            p1_total = max(0, p1_score + p1_car_sum)
+            p2_total = max(0, p2_score + p2_car_sum)
+            
+            if p1_total > p2_total:
+                match_winner = "PLAYER 1 WINS THE MATCH!"
+                winner_color = COLOR_NEON_CYAN
+            elif p2_total > p1_total:
+                match_winner = "PLAYER 2 WINS THE MATCH!"
+                winner_color = COLOR_NEON_MAGENTA
+            else:
+                match_winner = "MATCH DRAW!"
+                winner_color = COLOR_TEXT_WHITE
+                
+            draw_status_bar(display_frame, game_state, p1_cars, p2_cars, match_winner, round_counter, active_player)
+            draw_player_sideboards(display_frame, p1_cars, p2_cars, p1_car_points, p2_car_points, p1_round_points, p2_round_points, p1_score, p2_score, game_state, p1_coins_collected, p2_coins_collected, active_player)
+            
+            # High-tech final scoreboard card
+            card_w, card_h = 560, 410
+            cx1, cy1 = (w - card_w) // 2, (h - card_h) // 2
+            cx2, cy2 = cx1 + card_w, cy1 + card_h
+            
+            draw_glass_panel(display_frame, (cx1, cy1), (cx2, cy2), alpha=0.9, border_color=winner_color)
+            draw_sci_fi_corners(display_frame, (cx1, cy1), (cx2, cy2), winner_color, thickness=3, length=20)
+            
+            cv2.putText(display_frame, "COMPETITION COMPLETED // FINAL HUD REPORT", (cx1 + 30, cy1 + 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
+            cv2.line(display_frame, (cx1 + 30, cy1 + 50), (cx2 - 30, cy1 + 50), (100, 100, 100), 1)
+            
+            cv2.putText(display_frame, match_winner, (cx1 + 30, cy1 + 95),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, winner_color, 2, cv2.LINE_AA)
+            
+            # Scores details table
+            cv2.putText(display_frame, "PLAYER 1", (cx1 + 50, cy1 + 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_NEON_CYAN, 2, cv2.LINE_AA)
+            cv2.putText(display_frame, f"COIN COLLECTED: {p1_score} PTS", (cx1 + 50, cy1 + 155), cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT_WHITE, 1, cv2.LINE_AA)
+            cv2.putText(display_frame, f"VEHICLE DISTANCE: {p1_car_sum} PTS", (cx1 + 50, cy1 + 180), cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT_WHITE, 1, cv2.LINE_AA)
+            cv2.putText(display_frame, f"TOTAL: {p1_total} PTS", (cx1 + 50, cy1 + 205), cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_NEON_GREEN, 2, cv2.LINE_AA)
+            
+            cv2.putText(display_frame, "PLAYER 2", (cx1 + 320, cy1 + 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_NEON_MAGENTA, 2, cv2.LINE_AA)
+            cv2.putText(display_frame, f"COIN COLLECTED: {p2_score} PTS", (cx1 + 320, cy1 + 155), cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT_WHITE, 1, cv2.LINE_AA)
+            cv2.putText(display_frame, f"VEHICLE DISTANCE: {p2_car_sum} PTS", (cx1 + 320, cy1 + 180), cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT_WHITE, 1, cv2.LINE_AA)
+            cv2.putText(display_frame, f"TOTAL: {p2_total} PTS", (cx1 + 320, cy1 + 205), cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_NEON_GREEN, 2, cv2.LINE_AA)
+            
+            # Render the Score progression line graph
+            draw_score_graph(display_frame, cx1 + 30, cy1 + 225, 500, 120, p1_score_history, p2_score_history)
+            
+            cv2.line(display_frame, (cx1 + 30, cy1 + 360), (cx2 - 30, cy1 + 360), (100, 100, 100), 1)
+            cv2.putText(display_frame, "PRESS [S] TO PLAY AGAIN // [P] REPLAY SET // [Q] TO QUIT COMPETITION", (cx1 + 40, cy2 - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_TEXT_MUTED, 1, cv2.LINE_AA)
+            
+            # Animate victory particles
+            particles = [p for p in particles if p.is_alive()]
+            for p in particles:
+                p.update()
+                p.draw(display_frame)
+                
+            if random.random() < 0.15:
+                spark_x = random.randint(cx1, cx2)
+                spark_y = random.randint(cy1, cy2)
+                for _ in range(10):
+                    particles.append(Particle(spark_x, spark_y, winner_color))
+            
+            cv2.imshow("YOLO Toy Car Game HUD", display_frame)
 
         # Handle Keyboard Inputs
         key = cv2.waitKey(1) & 0xFF
@@ -863,7 +1274,7 @@ def main():
             break
             
         elif key == ord('s'):
-            # Return to selection screen
+            # Return to selection screen and reset match
             p1_score = 0
             p2_score = 0
             p1_coins_collected = 0
@@ -874,105 +1285,81 @@ def main():
             p2_car_points = {}
             p1_best_pos = None
             p2_best_pos = None
+            round_counter = 1
             recorded_frames.clear()
+            p1_score_history = [0]
+            p2_score_history = [0]
             p1_cars, p2_cars = assign_cars(p1_score, p2_score)
             coins.clear()
+            bombs.clear()
             particles.clear()
             game_state = STATE_SELECTING
             print("Returned to car selection screen with new randomized cars. Scores reset.")
             
         elif key == ord('p'):
-            if game_state == STATE_RESULT and recorded_frames:
+            if game_state in [STATE_RESULT, STATE_GAME_OVER] and recorded_frames:
+                return_state = game_state
                 game_state = STATE_REPLAY
-                print("Playing round replay...")
+                print("Playing set replay...")
             
         elif key == ord('r'):
             if game_state == STATE_RESULT:
-                # Trigger next round
                 particles.clear()
                 p1_coins_collected = 0
                 p2_coins_collected = 0
                 p1_round_points = 0
                 p2_round_points = 0
-                p1_car_points = {}
-                p2_car_points = {}
-                p1_best_pos = None
-                p2_best_pos = None
-                recorded_frames.clear()
-                # Pick a new target spot
-                ret, frame = cap.read()
-                if ret:
-                    h, w, _ = frame.shape
-                    tx, ty = generate_safe_target_spot(w, h)
-                    # Generate new coins near target
-                    coins = [{"x": cx, "y": cy, "collected": False} for cx, cy in generate_safe_coin_spots(w, h, tx, ty, num_coins=5)]
-                game_state = STATE_PLAYING
-                print(f"New round started! New target coordinates: ({tx}, {ty})")
+                
+                if round_counter < 10:
+                    round_counter += 1
+                    active_player = 3 - active_player
+                    turn_state = "WAITING"
+                    turn_start_time = 0.0
+                    motion_frames_count = 0
+                    prev_gray = None
+                    game_state = STATE_PLAYING
+                    print(f"Round {round_counter} started! Player {active_player}'s turn.")
+                else:
+                    frozen_frame = display_frame.copy()
+                    game_state = STATE_GAME_OVER
+                    game_over_frame_idx = 0
+                    last_game_over_frame_time = 0.0
+                    os.system("afplay ding_sound_effect.mp3 &")
+                    print("Game over! Match finished.")
+                    
             elif game_state == STATE_SELECTING:
-                # Re-roll randomized cars with Daihatsu bias based on score
                 p1_cars, p2_cars = assign_cars(p1_score, p2_score)
-                print(f"Re-rolled randomized cars (Daihatsu bias check). P1: {p1_cars}, P2: {p2_cars}")
+                print(f"Re-rolled randomized cars. P1: {p1_cars}, P2: {p2_cars}")
             
         elif key == ord(' '):
             if game_state == STATE_SELECTING:
-                # Lock selection and start playing if both chose exactly 3 and all are in the safe zone
                 if len(p1_safe_cars) == 3 and len(p2_safe_cars) == 3:
-                    # Select target spot
                     ret, frame = cap.read()
                     if ret:
                         h, w, _ = frame.shape
                         tx, ty = generate_safe_target_spot(w, h)
-                        # Generate coins near target
                         coins = [{"x": cx, "y": cy, "collected": False} for cx, cy in generate_safe_coin_spots(w, h, tx, ty, num_coins=5)]
+                        bombs = [{"x": bx, "y": by, "collected": False} for bx, by in generate_safe_bomb_spots(w, h, tx, ty, coins, num_bombs=3)]
                     p1_coins_collected = 0
                     p2_coins_collected = 0
-                    # Do not clear recorded_frames to keep the selection phase in the replay
+                    
+                    round_counter = 1
+                    active_player = random.choice([1, 2])
+                    turn_state = "WAITING"
+                    turn_start_time = 0.0
+                    motion_frames_count = 0
+                    prev_gray = None
+                    p1_score = 0
+                    p2_score = 0
+                    p1_score_history = [0]
+                    p2_score_history = [0]
+                    
                     game_state = STATE_PLAYING
                     print(f"Car selection finalized. Target zone locked at ({tx}, {ty}). Ready to play!")
+                    print(f"Active player start randomized: Player {active_player}")
             elif game_state == STATE_PLAYING:
-                # Freeze current state and evaluate winner
-                frozen_frame = display_frame.copy()
-                
-                # Evaluate results based on points
-                if p1_round_points == p2_round_points:
-                    if p1_round_points == 0:
-                        winner_str = "DRAW (0 PTS - NO CARS IN TARGET)"
-                    else:
-                        winner_str = f"DRAW (TIE AT {p1_round_points} PTS)"
-                    winning_pos = (tx, ty)
-                    winning_color = COLOR_TEXT_WHITE
-                elif p1_round_points > p2_round_points:
-                    winner_str = f"PLAYER 1 WINS! ({p1_round_points} vs {p2_round_points} PTS)"
-                    winning_pos = p1_best_pos if p1_best_pos else (tx, ty)
-                    winning_color = COLOR_NEON_CYAN
-                else:
-                    winner_str = f"PLAYER 2 WINS! ({p2_round_points} vs {p1_round_points} PTS)"
-                    winning_pos = p2_best_pos if p2_best_pos else (tx, ty)
-                    winning_color = COLOR_NEON_MAGENTA
-                
-                # Add target points (excluding coin points, which were already added in real-time) to overall scoreboard scores
-                p1_score += sum(p1_car_points.values())
-                p2_score += sum(p2_car_points.values())
-                
-                # Save the replay to an MP4 video file asynchronously in a background thread
-                is_saving_replay = True
-                replay_foldername = "/Users/kimi/Desktop/j/ ai hand whiteing boaro/toy_car_replays"
-                # Make a shallow copy of frames list to prevent concurrent modification during background writing
-                frames_copy = list(recorded_frames)
-                save_thread = threading.Thread(
-                    target=save_replay_video,
-                    args=(frames_copy, replay_foldername, 30.0),
-                    daemon=True
-                )
-                save_thread.start()
-                
-                # Spawn physics sparks at the winner's position
-                if winning_pos:
-                    for _ in range(75):
-                        particles.append(Particle(winning_pos[0], winning_pos[1], winning_color))
-                        
-                game_state = STATE_RESULT
-                print(f"Round Locked! Results: {winner_str}")
+                # Force trigger turn stop
+                turn_state = "STOPPED"
                 
         # Manual selection disabled in favor of computer auto-randomization
 

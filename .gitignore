@@ -4,3 +4,4 @@ yolo_dataset/
 train/
 venv/
 .DS_Store
+__pycache__/
